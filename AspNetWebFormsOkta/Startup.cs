@@ -13,6 +13,9 @@ using Owin;
 using System;
 using System.Collections.Generic;
 using System.Configuration;
+using System.Linq;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Claims;
 
 [assembly: OwinStartup(typeof(AspNetWebFormsOkta.Startup))]
@@ -54,16 +57,32 @@ namespace AspNetWebFormsOkta
                     AuthorizationCodeReceived = async n =>
                     {
                         // Exchange code for access and ID tokens
-                        var tokenClient = new TokenClient($"{_authority}/v1/token", _clientId, _clientSecret);
+                        var tokenClient = new HttpClient();
 
-                        var tokenResponse = await tokenClient.RequestAuthorizationCodeAsync(n.Code, _redirectUri);
+                        var tokenResponse = await tokenClient.RequestAuthorizationCodeTokenAsync(new AuthorizationCodeTokenRequest
+                        {
+                            Address = $"{_authority}/v1/token",
+                            ClientId = _clientId,
+                            ClientSecret = _clientSecret,
+                            Code = n.Code,
+                            RedirectUri = _redirectUri,
+                        });
+
                         if (tokenResponse.IsError)
                         {
                             throw new Exception(tokenResponse.Error);
                         }
 
-                        var userInfoClient = new UserInfoClient($"{_authority}/v1/userinfo");
-                        var userInfoResponse = await userInfoClient.GetAsync(tokenResponse.AccessToken);
+                        var userInfoResponse = await tokenClient.GetUserInfoAsync(new UserInfoRequest
+                        {
+                            Address = $"{_authority}/v1/userinfo",
+                            Token = tokenResponse.AccessToken
+                        });
+
+                        if (userInfoResponse.IsError)
+                        {
+                            throw new Exception(tokenResponse.Error);
+                        }
 
                         var claims = new List<Claim>(userInfoResponse.Claims)
                         {
@@ -71,7 +90,16 @@ namespace AspNetWebFormsOkta
                             new Claim("access_token", tokenResponse.AccessToken)
                         };
 
+                        foreach (var group in userInfoResponse.Claims.Where(x => x.Type == "groups"))
+                        {
+                            n.AuthenticationTicket.Identity.AddClaim(new Claim(ClaimTypes.Role, group.Value));
+                        }
+                        if (!string.IsNullOrEmpty(tokenResponse.RefreshToken))
+                        {
+                            claims.Add(new Claim("refresh_token", tokenResponse.RefreshToken));
+                        }
                         n.AuthenticationTicket.Identity.AddClaims(claims);
+
                     },
                 },
             });
